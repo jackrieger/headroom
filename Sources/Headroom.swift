@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 let usagePageURL = URL(string: "https://claude.ai/settings/usage")!
-let refreshInterval: TimeInterval = 5 * 60
+let refreshOptions = [1, 2, 5, 10, 15, 30]
 let requestID = "headroom"
 let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("Headroom")
@@ -274,6 +274,13 @@ final class Model: ObservableObject {
     @Published private(set) var accounts: [AccountConfig]
     @Published var states: [String: AccountState] = [:]
     @Published var signIns: [String: SignInWatch] = [:]
+    @Published var refreshMinutes = refreshOptions.contains(UserDefaults.standard.integer(forKey: "refreshMinutes"))
+        ? UserDefaults.standard.integer(forKey: "refreshMinutes") : 5 {
+        didSet {
+            UserDefaults.standard.set(refreshMinutes, forKey: "refreshMinutes")
+            refreshIfDue()
+        }
+    }
     @Published var menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .dots {
         didSet { UserDefaults.standard.set(menuBarStyle.rawValue, forKey: "menuBarStyle") }
     }
@@ -326,6 +333,8 @@ final class Model: ObservableObject {
             refresh(account)
         }
     }
+
+    func refreshIfDue() { refreshIfStale(olderThan: TimeInterval(refreshMinutes * 60) - 5) }
 
     func refreshAll() { accounts.forEach(refresh) }
 
@@ -678,6 +687,17 @@ struct ContentView: View {
                 .fixedSize()
             }
             HStack {
+                Text("Refresh every").foregroundStyle(.secondary)
+                Spacer()
+                Picker("Refresh every", selection: $model.refreshMinutes) {
+                    ForEach(refreshOptions, id: \.self) { Text($0 == 1 ? "minute" : "\($0) minutes").tag($0) }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .fixedSize()
+            }
+            HStack {
                 Toggle("Open at login", isOn: $openAtLogin)
                     .toggleStyle(.checkbox)
                     .onChange(of: openAtLogin) { _, enabled in
@@ -892,7 +912,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.refreshAll()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.model.refreshIfStale(olderThan: refreshInterval - 5)
+                self?.model.refreshIfDue()
                 self?.updateStatusItem()
             }
         }
