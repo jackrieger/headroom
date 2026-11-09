@@ -696,22 +696,26 @@ struct StatusSegment {
 }
 
 func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
+    let cells = 10, cellWidth: CGFloat = 1.5, pitch: CGFloat = 2.5, dot: CGFloat = 1.5
     let barHeight = (rect.height - 3) / 2
     for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
-        let track = NSRect(x: rect.minX, y: y, width: rect.width, height: barHeight)
-        NSColor.labelColor.withAlphaComponent(0.25).setFill()
-        track.fill(using: .sourceOver)
-        if let value, value > 0 {
-            levelColor(value).setFill()
-            NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 1.5), height: track.height)
-                .fill(using: .sourceOver)
+        let filled = value.map { $0 > 0 ? max(Int((min($0, 100) / 10).rounded()), 1) : 0 } ?? 0
+        for cell in 0..<cells {
+            let x = rect.minX + CGFloat(cell) * pitch
+            if cell < filled {
+                levelColor(value).setFill()
+                NSRect(x: x, y: y, width: cellWidth, height: barHeight).fill(using: .sourceOver)
+            } else {
+                NSColor.labelColor.withAlphaComponent(0.45).setFill()
+                NSRect(x: x, y: y + (barHeight - dot) / 2, width: dot, height: dot).fill(using: .sourceOver)
+            }
         }
     }
 }
 
 func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
     let height: CGFloat = 22, gap: CGFloat = 11
-    let barsSize = NSSize(width: 20, height: 13)
+    let barsSize = NSSize(width: 24, height: 12)
     let width = barsSize.width * CGFloat(segments.count) + gap * CGFloat(segments.count - 1)
     return NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
         appearance.performAsCurrentDrawingAppearance {
