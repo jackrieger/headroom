@@ -5,8 +5,9 @@ cd "$(dirname "$0")"
 
 APP=build/Headroom.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 swiftc -O -target arm64-apple-macos14 -o "$APP/Contents/MacOS/Headroom" Sources/*.swift
 # A stable identity keeps the login item registered across rebuilds; ad-hoc changes it every build
 IDENTITY=$(security find-identity -v -p codesigning | awk '/Apple Development/ {print $2; exit}')

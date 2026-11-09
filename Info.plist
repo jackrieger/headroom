@@ -6,6 +6,8 @@
 	<string>Headroom</string>
 	<key>CFBundleExecutable</key>
 	<string>Headroom</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.headroom</string>
 	<key>CFBundleName</key>

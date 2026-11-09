@@ -38,3 +38,11 @@ The Claude desktop app keeps its own login, which Headroom can't read. To track 
 ```
 
 Headroom adds itself as a login item on first launch. Turn that off with the checkbox in its popover.
+
+## Icon
+
+The icon is the Dot matrix meter, drawn by `tools/icon/main.swift`. To redraw it:
+
+```sh
+swiftc -O -o build/tools/icon tools/icon/main.swift && build/tools/icon build/AppIcon.iconset && iconutil -c icns build/AppIcon.iconset -o Resources/AppIcon.icns
+```
