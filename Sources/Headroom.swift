@@ -685,52 +685,34 @@ func levelColor(_ value: Double?) -> NSColor {
 }
 
 struct StatusSegment {
-    let label: String?
     let session: Double?
     let weekly: Double?
 }
 
 func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
     let barHeight = (rect.height - 3) / 2
+    let radius: CGFloat = 1.5
     for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
         let track = NSRect(x: rect.minX, y: y, width: rect.width, height: barHeight)
         NSColor.labelColor.withAlphaComponent(0.25).setFill()
-        track.fill(using: .sourceOver)
+        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
         if let value, value > 0 {
             levelColor(value).setFill()
-            NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 1.5), height: track.height)
-                .fill(using: .sourceOver)
+            let fill = NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, radius * 2), height: track.height)
+            NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
         }
     }
 }
 
 func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
-    let letterFont = NSFont.systemFont(ofSize: 6.5, weight: .bold)
-    let height: CGFloat = 22, lineStep: CGFloat = 6.5, gap: CGFloat = 8
+    let height: CGFloat = 22, gap: CGFloat = 7
     let barsSize = NSSize(width: 20, height: 13)
-    let columns = segments.map { segment in
-        (segment.label ?? "").uppercased().prefix(3).map { NSAttributedString(string: String($0), attributes: [.font: letterFont]) }
-    }
-    let columnWidths = columns.map { ceil($0.map { $0.size().width }.max() ?? 0) }
-    let widths = columnWidths.map { $0 > 0 ? $0 + 2 + barsSize.width : barsSize.width }
-    let width = widths.reduce(0, +) + gap * CGFloat(segments.count - 1)
+    let width = barsSize.width * CGFloat(segments.count) + gap * CGFloat(segments.count - 1)
     return NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
         appearance.performAsCurrentDrawingAppearance {
-            var x: CGFloat = 0
             for (index, segment) in segments.enumerated() {
-                let column = columns[index]
-                let span = CGFloat(max(column.count - 1, 0)) * lineStep + letterFont.capHeight
-                var baseline = (height + span) / 2 - letterFont.capHeight
-                for letter in column {
-                    let colored = NSMutableAttributedString(attributedString: letter)
-                    colored.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: colored.length))
-                    colored.draw(at: NSPoint(x: x + (columnWidths[index] - letter.size().width) / 2, y: baseline + letterFont.descender))
-                    baseline -= lineStep
-                }
-                let barsX = x + (columnWidths[index] > 0 ? columnWidths[index] + 2 : 0)
-                drawBars(in: NSRect(x: barsX, y: (height - barsSize.height) / 2, width: barsSize.width, height: barsSize.height),
-                         session: segment.session, weekly: segment.weekly)
-                x += widths[index] + gap
+                let origin = NSPoint(x: CGFloat(index) * (barsSize.width + gap), y: (height - barsSize.height) / 2)
+                drawBars(in: NSRect(origin: origin, size: barsSize), session: segment.session, weekly: segment.weekly)
             }
         }
         return true
@@ -801,12 +783,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let segments = tracked.map { entry in
             StatusSegment(
-                label: entry.label,
                 session: entry.usage.limit("session")?.currentPercent(at: now),
                 weekly: entry.usage.limit("weekly_all")?.currentPercent(at: now))
         }
         button.image = statusImage(
-            segments.isEmpty ? [StatusSegment(label: "Claude", session: nil, weekly: nil)] : segments,
+            segments.isEmpty ? [StatusSegment(session: nil, weekly: nil)] : segments,
             appearance: button.effectiveAppearance)
 
         let lines = tracked.map { entry -> String in
