@@ -303,9 +303,14 @@ final class Model: ObservableObject {
             ?? (account.isDefault ? "Claude Code" : "New account")
     }
 
+    var sortedAccounts: [AccountConfig] {
+        accounts.sorted { label($0).localizedStandardCompare(label($1)) == .orderedAscending }
+    }
+
     func duplicate(of account: AccountConfig) -> String? {
-        guard let id = state(account).profile.id, let index = accounts.firstIndex(of: account) else { return nil }
-        return accounts[..<index].first { state($0).profile.id == id }.map(label)
+        let sorted = sortedAccounts
+        guard let id = state(account).profile.id, let index = sorted.firstIndex(of: account) else { return nil }
+        return sorted[..<index].first { state($0).profile.id == id }.map(label)
     }
 
     var refreshing: Bool { states.values.contains { $0.refreshing } }
@@ -619,9 +624,10 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             TimelineView(.periodic(from: .now, by: 30)) { context in
+                let accounts = model.sortedAccounts
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(model.accounts) { account in
-                        if account != model.accounts.first { Divider() }
+                    ForEach(accounts) { account in
+                        if account != accounts.first { Divider() }
                         AccountSection(model: model, account: account, now: context.date)
                     }
                 }
@@ -691,21 +697,20 @@ struct StatusSegment {
 
 func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
     let barHeight = (rect.height - 3) / 2
-    let radius: CGFloat = 1.5
     for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
         let track = NSRect(x: rect.minX, y: y, width: rect.width, height: barHeight)
         NSColor.labelColor.withAlphaComponent(0.25).setFill()
-        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
+        track.fill(using: .sourceOver)
         if let value, value > 0 {
             levelColor(value).setFill()
-            let fill = NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, radius * 2), height: track.height)
-            NSBezierPath(roundedRect: fill, xRadius: radius, yRadius: radius).fill()
+            NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 1.5), height: track.height)
+                .fill(using: .sourceOver)
         }
     }
 }
 
 func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
-    let height: CGFloat = 22, gap: CGFloat = 7
+    let height: CGFloat = 22, gap: CGFloat = 11
     let barsSize = NSSize(width: 20, height: 13)
     let width = barsSize.width * CGFloat(segments.count) + gap * CGFloat(segments.count - 1)
     return NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
@@ -778,7 +783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
         let now = Date()
-        let tracked = model.accounts.compactMap { account in
+        let tracked = model.sortedAccounts.compactMap { account in
             model.state(account).usage.map { (label: model.label(account), usage: $0) }
         }
         let segments = tracked.map { entry in
