@@ -894,6 +894,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
         popover.behavior = .transient
+        popover.animates = false
+        hosting.view.layoutSubtreeIfNeeded()
         model.closePopover = { [weak self] in self?.popover.performClose(nil) }
 
         if let button = statusItem.button {
