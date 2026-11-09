@@ -274,7 +274,7 @@ final class Model: ObservableObject {
     @Published private(set) var accounts: [AccountConfig]
     @Published var states: [String: AccountState] = [:]
     @Published var signIns: [String: SignInWatch] = [:]
-    @Published var menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .hash {
+    @Published var menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .dots {
         didSet { UserDefaults.standard.set(menuBarStyle.rawValue, forKey: "menuBarStyle") }
     }
     var closePopover: (() -> Void)?
@@ -710,18 +710,18 @@ struct StatusSegment {
 }
 
 enum MenuBarStyle: String, CaseIterable, Identifiable {
-    case hash, dots, horizontal, vertical, rings, numbers
+    case dots, hash, horizontal, rings, numbers, vertical
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .hash: "Hash and dots"
         case .dots: "Dot matrix"
+        case .hash: "Hash and dots"
         case .horizontal: "Horizontal meters"
-        case .vertical: "Vertical meters"
         case .rings: "Rings"
         case .numbers: "Stacked numbers"
+        case .vertical: "Vertical meters"
         }
     }
 }
