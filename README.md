@@ -1,19 +1,27 @@
 # Headroom
 
-Menu bar meter for your Claude plan limits, so you can see a limit coming before you hit it.
+Menu bar meter for your Claude plan limits, across one or more Claude accounts, so you can see a limit coming before you hit it.
 
-- The menu bar shows two small bars (top: the 5-hour session, bottom: the weekly limit) and the higher of the two percentages. The number turns orange at 80% and red at 95%.
-- Click it for every limit Claude reports (5-hour, weekly, and per-model weekly limits like Fable), each with its reset time.
+- The menu bar shows two small bars (top: the 5-hour session, bottom: the weekly limit) and the higher of the two percentages. With more than one account it shows each one, like `Team 37%  Pro 54%`, and the bars follow whichever account is closest to a limit. Percentages turn orange at 80% and red at 95%.
+- Click it for every limit each account has (5-hour, weekly, and per-model weekly limits like Fable), each with its reset time.
 - The tick on each bar shows how much of that window has passed. When usage is ahead of the tick, Headroom estimates when you'll run out at the current pace, if that's before the reset.
 - Refreshes every 5 minutes, and when you open it if the last check is over a minute old.
 
 ## Where the numbers come from
 
-Headroom never touches your Claude login. It asks Claude Code for the numbers through the `get_usage` request Claude Code offers to apps that host it, and Claude Code handles its own sign-in and token refresh. The numbers match `/usage` in Claude Code.
+Headroom never touches your Claude logins. It asks Claude Code for the numbers through the `get_usage` request Claude Code offers to apps that host it, and Claude Code handles its own sign-in and token refresh. The numbers match `/usage` in Claude Code.
 
-Each check runs `~/.local/bin/claude -p` in stream-json mode with no MCP servers, no settings, no slash commands and no saved session. It sends one `get_usage` request and quits. That takes about a second and makes no model call, so it costs nothing. Claude Code labels the request experimental, so a future Claude Code update could change the response shape.
+Each check runs `~/.local/bin/claude -p` in stream-json mode with no MCP servers, no settings, no slash commands, no saved session and a clean environment. It sends one `get_usage` request and quits. That takes about a second and makes no model call, so it costs nothing. Claude Code labels the request experimental, so a future Claude Code update could change the response shape.
 
-The limits are for whichever account the terminal `claude` is signed in to, shown under the title. The Claude desktop app can be signed in to a different account. To track a different account, sign the terminal `claude` in to it with `/login`.
+## Accounts
+
+The first account is whichever one your terminal `claude` is signed in to (`~/.claude`). Headroom can't remove it, but you can rename it.
+
+**Add account** gives the new account its own Claude Code config folder in `~/Library/Application Support/Headroom/Accounts/` and opens Terminal to run `claude auth login` with `CLAUDE_CONFIG_DIR` set to that folder. Sign in in the browser with the account you want. If the browser is already signed in to a different Claude account, switch accounts there first. Headroom picks up the new account a few seconds after you finish. Claude Code stores each folder's login under its own Keychain entry (`Claude Code-credentials-<hash of the folder>`), so adding an account never signs your terminal `claude` out of its own.
+
+If you sign in to an account Headroom already tracks, its section warns you. Use **Sign In Again…** from its ⋯ menu to fix that. **Remove Account** runs `claude auth logout` for that folder, which deletes only that folder's Keychain entry, and then deletes the folder.
+
+The Claude desktop app keeps its own login, which Headroom can't read. To track the account the desktop app uses, add it here too.
 
 ## Build
 

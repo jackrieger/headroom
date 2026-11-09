@@ -6,6 +6,9 @@ import SwiftUI
 let usagePageURL = URL(string: "https://claude.ai/settings/usage")!
 let refreshInterval: TimeInterval = 5 * 60
 let requestID = "headroom"
+let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("Headroom")
+let accountsDirectory = supportDirectory.appendingPathComponent("Accounts")
 
 enum Level {
     case normal, warning, critical
@@ -70,8 +73,9 @@ struct Usage: Sendable {
     }
 }
 
-struct UsageError: Error {
+struct UsageError: Error, Sendable {
     let message: String
+    var signedOut = false
 }
 
 func number(_ value: Any?) -> Double? { (value as? NSNumber)?.doubleValue }
@@ -104,7 +108,7 @@ func limitWindow(kind: String, group: String?) -> TimeInterval? {
     return nil
 }
 
-func parseUsage(_ output: Data) throws -> Usage {
+func parseUsage(_ output: Data) throws(UsageError) -> Usage {
     for line in output.split(separator: UInt8(ascii: "\n")) {
         guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
               object["type"] as? String == "control_response",
@@ -120,14 +124,13 @@ func parseUsage(_ output: Data) throws -> Usage {
     throw UsageError(message: "Claude Code didn't answer.")
 }
 
-func usage(from body: [String: Any]) throws -> Usage {
+func usage(from body: [String: Any]) throws(UsageError) -> Usage {
     let plan = (body["subscription_type"] as? String).map(planName)
     guard body["rate_limits_available"] as? Bool != false,
           let rateLimits = body["rate_limits"] as? [String: Any]
     else {
-        throw UsageError(message: plan == nil
-            ? "Claude Code isn't signed in to a Claude plan. Run claude in Terminal and use /login."
-            : "Claude Code couldn't read your plan limits just now.")
+        if plan == nil { throw UsageError(message: "Not signed in.", signedOut: true) }
+        throw UsageError(message: "Claude Code couldn't read your plan limits just now.")
     }
     let rows = rateLimits["limits"] as? [[String: Any]] ?? []
     let limits = rows.enumerated().compactMap { index, row -> Limit? in
@@ -153,12 +156,22 @@ func findClaude() -> URL? {
         .map { URL(fileURLWithPath: $0) }
 }
 
-func accountEmail() -> String? {
-    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
-    guard let data = try? Data(contentsOf: url),
-          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else { return nil }
-    return (json["oauthAccount"] as? [String: Any])?["emailAddress"] as? String
+struct Profile: Sendable {
+    var id: String?
+    var email: String?
+}
+
+func profile(configDir: String?) -> Profile {
+    let directory = configDir.map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser
+    guard let data = try? Data(contentsOf: directory.appendingPathComponent(".claude.json")),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let account = json["oauthAccount"] as? [String: Any]
+    else { return Profile() }
+    return Profile(id: account["accountUuid"] as? String, email: account["emailAddress"] as? String)
+}
+
+func shellQuote(_ text: String) -> String {
+    "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 struct RunResult: Sendable {
@@ -166,25 +179,26 @@ struct RunResult: Sendable {
     let err: String
 }
 
-func askClaudeForUsage(_ claude: URL, timeout: TimeInterval = 45) async -> RunResult {
+func runClaude(_ claude: URL, _ arguments: [String], configDir: String?, input: String? = nil, timeout: TimeInterval = 45) async -> RunResult {
     await withCheckedContinuation { continuation in
         DispatchQueue.global().async {
-            let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Headroom")
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
+            try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
             let process = Process()
             process.executableURL = claude
-            process.arguments = [
-                "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands",
-            ]
-            process.currentDirectoryURL = directory
-            var environment = ProcessInfo.processInfo.environment
+            process.arguments = arguments
+            process.currentDirectoryURL = supportDirectory
+            // Clean on purpose: inherited CLAUDE_CODE_* and ANTHROPIC_* variables can switch which account claude reads
+            let inherited = ProcessInfo.processInfo.environment
+            var environment = ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "SHELL"].reduce(into: [String: String]()) { $0[$1] = inherited[$1] }
             environment["PATH"] = "\(claude.deletingLastPathComponent().path):/usr/bin:/bin:/usr/sbin:/sbin"
+            environment["CLAUDE_CONFIG_DIR"] = configDir
             process.environment = environment
-            let input = Pipe(), out = Pipe(), err = Pipe()
-            process.standardInput = input
+            let stdin = Pipe(), out = Pipe(), err = Pipe()
+            if input != nil {
+                process.standardInput = stdin
+            } else {
+                process.standardInput = FileHandle.nullDevice
+            }
             process.standardOutput = out
             process.standardError = err
             do {
@@ -193,9 +207,10 @@ func askClaudeForUsage(_ claude: URL, timeout: TimeInterval = 45) async -> RunRe
                 continuation.resume(returning: RunResult(out: Data(), err: error.localizedDescription))
                 return
             }
-            let request = #"{"type":"control_request","request_id":"\#(requestID)","request":{"subtype":"get_usage","skip_behaviors":true}}"#
-            try? input.fileHandleForWriting.write(contentsOf: Data((request + "\n").utf8))
-            try? input.fileHandleForWriting.close()
+            if let input {
+                try? stdin.fileHandleForWriting.write(contentsOf: Data(input.utf8))
+                try? stdin.fileHandleForWriting.close()
+            }
 
             let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
@@ -215,40 +230,202 @@ func askClaudeForUsage(_ claude: URL, timeout: TimeInterval = 45) async -> RunRe
     }
 }
 
+func fetchUsage(configDir: String?) async -> Result<Usage, UsageError> {
+    guard let claude = findClaude() else {
+        return .failure(UsageError(message: "Headroom reads your limits through Claude Code, which isn't installed."))
+    }
+    let request = #"{"type":"control_request","request_id":"\#(requestID)","request":{"subtype":"get_usage","skip_behaviors":true}}"#
+    let arguments = [
+        "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+        "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands",
+    ]
+    let result = await runClaude(claude, arguments, configDir: configDir, input: request + "\n")
+    do {
+        return .success(try parseUsage(result.out))
+    } catch {
+        let detail = result.out.isEmpty ? result.err.split(whereSeparator: \.isNewline).last.map(String.init) : nil
+        return .failure(detail.map { UsageError(message: $0) } ?? error)
+    }
+}
+
+struct AccountConfig: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    var configDir: String?
+    var name: String?
+
+    var isDefault: Bool { configDir == nil }
+}
+
+struct AccountState {
+    var usage: Usage?
+    var error: UsageError?
+    var refreshing = false
+    var profile = Profile()
+    var lastAttempt: Date?
+}
+
+struct SignInWatch {
+    let since: Date
+    let previousID: String?
+}
+
 @MainActor
 final class Model: ObservableObject {
-    @Published var usage: Usage?
-    @Published var error: String?
-    @Published var refreshing = false
-    @Published var email = accountEmail()
-    private var lastAttempt: Date?
+    @Published private(set) var accounts: [AccountConfig]
+    @Published var states: [String: AccountState] = [:]
+    @Published var signIns: [String: SignInWatch] = [:]
+    var closePopover: (() -> Void)?
+    private var signInTimer: Timer?
 
-    func refreshIfStale(olderThan age: TimeInterval) {
-        if let lastAttempt, Date().timeIntervalSince(lastAttempt) < age { return }
-        refresh()
+    init() {
+        if let data = UserDefaults.standard.data(forKey: "accounts"),
+           let saved = try? JSONDecoder().decode([AccountConfig].self, from: data), !saved.isEmpty {
+            accounts = saved
+        } else {
+            accounts = [AccountConfig(id: "default")]
+        }
+        for account in accounts {
+            states[account.id] = AccountState(profile: profile(configDir: account.configDir))
+        }
     }
 
-    func refresh() {
-        guard !refreshing else { return }
-        refreshing = true
-        lastAttempt = Date()
+    private func save() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(accounts), forKey: "accounts")
+    }
+
+    func state(_ account: AccountConfig) -> AccountState { states[account.id] ?? AccountState() }
+
+    func label(_ account: AccountConfig) -> String {
+        let state = state(account)
+        return account.name
+            ?? state.usage?.plan
+            ?? state.profile.email.map { String($0.prefix { $0 != "@" }) }
+            ?? (account.isDefault ? "Claude Code" : "New account")
+    }
+
+    func duplicate(of account: AccountConfig) -> String? {
+        guard let id = state(account).profile.id, let index = accounts.firstIndex(of: account) else { return nil }
+        return accounts[..<index].first { state($0).profile.id == id }.map(label)
+    }
+
+    var refreshing: Bool { states.values.contains { $0.refreshing } }
+
+    var oldestFetch: Date? { accounts.compactMap { state($0).usage?.fetchedAt }.min() }
+
+    func refreshIfStale(olderThan age: TimeInterval) {
+        for account in accounts {
+            if let lastAttempt = state(account).lastAttempt, Date().timeIntervalSince(lastAttempt) < age { continue }
+            refresh(account)
+        }
+    }
+
+    func refreshAll() { accounts.forEach(refresh) }
+
+    func refresh(_ account: AccountConfig) {
+        guard !state(account).refreshing else { return }
+        states[account.id, default: AccountState()].refreshing = true
+        states[account.id]?.lastAttempt = Date()
         Task {
-            defer { refreshing = false }
-            guard let claude = findClaude() else {
-                error = "Headroom reads your limits through Claude Code, which isn't installed."
-                return
+            let result = await fetchUsage(configDir: account.configDir)
+            guard accounts.contains(where: { $0.id == account.id }) else { return }
+            var state = self.state(account)
+            state.refreshing = false
+            state.profile = profile(configDir: account.configDir)
+            switch result {
+            case .success(let usage):
+                state.usage = usage
+                state.error = nil
+            case .failure(let error):
+                state.error = error
             }
-            let result = await askClaudeForUsage(claude)
-            email = accountEmail()
-            do {
-                usage = try parseUsage(result.out)
-                error = nil
-            } catch let failure as UsageError {
-                let detail = result.out.isEmpty ? result.err.split(whereSeparator: \.isNewline).last.map(String.init) : nil
-                error = detail ?? failure.message
-            } catch {
-                self.error = error.localizedDescription
+            states[account.id] = state
+        }
+    }
+
+    func addAccount() {
+        let account = AccountConfig(id: UUID().uuidString, configDir: accountsDirectory.appendingPathComponent(UUID().uuidString).path)
+        do {
+            try FileManager.default.createDirectory(atPath: account.configDir!, withIntermediateDirectories: true)
+        } catch {
+            NSSound.beep()
+            return
+        }
+        accounts.append(account)
+        states[account.id] = AccountState(error: UsageError(message: "Not signed in.", signedOut: true))
+        save()
+        signIn(account)
+    }
+
+    func signIn(_ account: AccountConfig) {
+        guard let configDir = account.configDir, let claude = findClaude() else { return }
+        let script = """
+        #!/bin/zsh
+        rm -f "$0"
+        clear
+        print -P "%BAdd a Claude account to Headroom%b"
+        print "Your browser opens next. Make sure it's signed in to the Claude account you want to add."
+        print
+        CLAUDE_CONFIG_DIR=\(shellQuote(configDir)) \(shellQuote(claude.path)) auth login
+        print
+        read -sk '?Press any key to close.'
+
+        """
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-sign-in-\(UUID().uuidString).command")
+        do {
+            try script.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        } catch {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.open(url)
+        signIns[account.id] = SignInWatch(since: Date(), previousID: profile(configDir: configDir).id)
+        if signInTimer == nil {
+            signInTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.checkSignIns() }
             }
+        }
+        closePopover?()
+    }
+
+    private func checkSignIns() {
+        for (id, watch) in signIns {
+            guard let account = accounts.first(where: { $0.id == id }), Date().timeIntervalSince(watch.since) < 15 * 60 else {
+                signIns[id] = nil
+                continue
+            }
+            let current = profile(configDir: account.configDir).id
+            guard current != nil, current != watch.previousID else { continue }
+            signIns[id] = nil
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                refresh(account)
+            }
+        }
+        if signIns.isEmpty {
+            signInTimer?.invalidate()
+            signInTimer = nil
+        }
+    }
+
+    func rename(_ account: AccountConfig, to name: String) {
+        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        accounts[index].name = trimmed.isEmpty ? nil : trimmed
+        save()
+    }
+
+    func remove(_ account: AccountConfig) {
+        guard let configDir = account.configDir, configDir.hasPrefix(accountsDirectory.path + "/") else { return }
+        accounts.removeAll { $0.id == account.id }
+        states[account.id] = nil
+        signIns[account.id] = nil
+        save()
+        Task.detached {
+            if let claude = findClaude() {
+                _ = await runClaude(claude, ["auth", "logout"], configDir: configDir, timeout: 30)
+            }
+            try? FileManager.default.removeItem(atPath: configDir)
         }
     }
 }
@@ -324,89 +501,175 @@ struct LimitRow: View {
     }
 }
 
+struct AccountSection: View {
+    @ObservedObject var model: Model
+    let account: AccountConfig
+    let now: Date
+    @State private var renaming = false
+    @State private var draft = ""
+    @FocusState private var nameFocused: Bool
+
+    var body: some View {
+        let state = model.state(account)
+        VStack(alignment: .leading, spacing: 12) {
+            title(state)
+            if let original = model.duplicate(of: account) {
+                Text("This is the same login as \(original). Sign in again with a different account.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let usage = state.usage {
+                ForEach(usage.limits) { LimitRow(limit: $0, now: now) }
+            }
+            if model.signIns[account.id] != nil, state.usage == nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Finish signing in in Terminal…").font(.callout).foregroundStyle(.secondary)
+                }
+            } else if let error = state.error {
+                problem(error, hasUsage: state.usage != nil)
+            } else if state.usage == nil {
+                Text("Checking…").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func title(_ state: AccountState) -> some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                if renaming {
+                    TextField("Name", text: $draft)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($nameFocused)
+                        .frame(maxWidth: 180)
+                        .onAppear { nameFocused = true }
+                        .onSubmit {
+                            model.rename(account, to: draft)
+                            renaming = false
+                        }
+                        .onExitCommand { renaming = false }
+                } else {
+                    HStack(spacing: 6) {
+                        Text(model.label(account)).font(.headline)
+                        if let plan = state.usage?.plan, plan != model.label(account) {
+                            Text(plan)
+                                .font(.caption2.weight(.medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.primary.opacity(0.08), in: Capsule())
+                        }
+                    }
+                }
+                if let email = state.profile.email {
+                    Text(email).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if state.refreshing { ProgressView().controlSize(.mini) }
+            Menu {
+                Button("Rename…") {
+                    draft = model.label(account)
+                    renaming = true
+                }
+                if !account.isDefault {
+                    Button("Sign In Again…") { model.signIn(account) }
+                    Divider()
+                    Button("Remove Account") { model.remove(account) }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func problem(_ error: UsageError, hasUsage: Bool) -> some View {
+        if error.signedOut && account.isDefault && !hasUsage {
+            Text("Claude Code isn't signed in. Run claude in Terminal and use /login.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if error.signedOut && !account.isDefault {
+            HStack {
+                Text(hasUsage ? "Signed out. These numbers are old." : "Not signed in.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Sign In…") { model.signIn(account) }
+                    .controlSize(.small)
+            }
+        } else {
+            Text(hasUsage ? "Couldn't update: \(error.message)" : error.message)
+                .font(.caption)
+                .foregroundStyle(hasUsage ? .secondary : .primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                limits(now: context.date)
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(model.accounts) { account in
+                        if account != model.accounts.first { Divider() }
+                        AccountSection(model: model, account: account, now: context.date)
+                    }
+                }
             }
             Divider()
             footer
         }
         .padding(16)
-        .frame(width: 320)
-    }
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text("Claude usage").font(.headline)
-                    if let plan = model.usage?.plan {
-                        Text(plan)
-                            .font(.caption2.weight(.medium))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(Color.primary.opacity(0.08), in: Capsule())
-                    }
-                }
-                if let email = model.email {
-                    Text(email).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if model.refreshing { ProgressView().controlSize(.mini) }
-            Button { NSWorkspace.shared.open(usagePageURL) } label: {
-                Image(systemName: "arrow.up.right.square")
-            }
-            .buttonStyle(.borderless)
-            .help("Open the usage page on claude.ai")
-        }
-    }
-
-    private func limits(now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let usage = model.usage {
-                ForEach(usage.limits) { LimitRow(limit: $0, now: now) }
-            } else if model.error == nil {
-                Text("Checking…").foregroundStyle(.secondary)
-            }
-            if let error = model.error {
-                Text(model.usage == nil ? error : "Couldn't update: \(error)")
-                    .font(.caption)
-                    .foregroundStyle(model.usage == nil ? .primary : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
+        .frame(width: 340)
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            Toggle("Open at login", isOn: $openAtLogin)
-                .toggleStyle(.checkbox)
-                .onChange(of: openAtLogin) { _, enabled in
-                    do {
-                        if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-                    } catch {
-                        openAtLogin = SMAppService.mainApp.status == .enabled
-                    }
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Button { model.addAccount() } label: {
+                    Label("Add account", systemImage: "plus")
                 }
-            Spacer()
-            if let fetchedAt = model.usage?.fetchedAt {
-                Text("Updated \(fetchedAt.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
-            }
-            Button { model.refresh() } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.refreshing)
-            .help("Refresh")
-            Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless)
+                .help("Sign in to another Claude account to track it too")
+                Spacer()
+                if let fetched = model.oldestFetch {
+                    Text("Updated \(fetched.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
+                }
+                Button { model.refreshAll() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.refreshing)
+                .help("Refresh")
+                Button { NSWorkspace.shared.open(usagePageURL) } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderless)
+                .help("Open the usage page on claude.ai")
+            }
+            HStack {
+                Toggle("Open at login", isOn: $openAtLogin)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: openAtLogin) { _, enabled in
+                        do {
+                            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                        } catch {
+                            openAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }
+                    .buttonStyle(.borderless)
+            }
         }
         .font(.caption)
     }
@@ -431,6 +694,10 @@ func barsIcon(top: Double?, bottom: Double?) -> NSImage {
     return image
 }
 
+func percentText(_ value: Double?) -> String {
+    value.map { "\(Int($0.rounded()))%" } ?? "–"
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = Model()
@@ -449,6 +716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
         popover.behavior = .transient
+        model.closePopover = { [weak self] in self?.popover.performClose(nil) }
 
         if let button = statusItem.button {
             button.target = self
@@ -461,7 +729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in DispatchQueue.main.async { self?.updateStatusItem() } }
             .store(in: &cancellables)
 
-        model.refresh()
+        model.refreshAll()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.model.refreshIfStale(olderThan: refreshInterval - 5)
@@ -484,19 +752,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItem() {
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem.button, let font = button.font else { return }
         let now = Date()
-        let session = model.usage?.limit("session")?.currentPercent(at: now)
-        let weekly = model.usage?.limit("weekly_all")?.currentPercent(at: now)
-        button.image = barsIcon(top: session, bottom: weekly)
-        let headline = model.usage?.headline(at: now)
-        let text = headline.map { " \(Int($0.rounded()))%" } ?? " –"
-        if let headline, let color = Level(percent: headline).menuBarColor, let font = button.font {
-            button.attributedTitle = NSAttributedString(string: text, attributes: [.foregroundColor: color, .font: font])
-        } else {
-            button.title = text
+        let tracked = model.accounts.compactMap { account in
+            model.state(account).usage.map { (label: model.label(account), usage: $0) }
         }
-        let parts = [session.map { "5-hour \(Int($0.rounded()))%" }, weekly.map { "weekly \(Int($0.rounded()))%" }].compactMap { $0 }
-        button.toolTip = "Claude usage: " + (parts.isEmpty ? model.error ?? "checking…" : parts.joined(separator: " · "))
+        let busiest = tracked.max { ($0.usage.headline(at: now) ?? 0) < ($1.usage.headline(at: now) ?? 0) }?.usage
+        button.image = barsIcon(
+            top: busiest?.limit("session")?.currentPercent(at: now),
+            bottom: busiest?.limit("weekly_all")?.currentPercent(at: now))
+
+        if tracked.count > 1 {
+            let title = NSMutableAttributedString()
+            for (index, entry) in tracked.enumerated() {
+                let headline = entry.usage.headline(at: now)
+                let color = headline.flatMap { Level(percent: $0).menuBarColor } ?? .labelColor
+                title.append(NSAttributedString(string: (index == 0 ? " " : "  ") + entry.label + " ",
+                                                attributes: [.font: font, .foregroundColor: NSColor.labelColor]))
+                title.append(NSAttributedString(string: percentText(headline), attributes: [.font: font, .foregroundColor: color]))
+            }
+            button.attributedTitle = title
+        } else {
+            let headline = busiest?.headline(at: now)
+            if let headline, let color = Level(percent: headline).menuBarColor {
+                button.attributedTitle = NSAttributedString(string: " " + percentText(headline), attributes: [.foregroundColor: color, .font: font])
+            } else {
+                button.title = " " + percentText(headline)
+            }
+        }
+
+        let lines = tracked.map { entry -> String in
+            let parts = [
+                entry.usage.limit("session").map { "5-hour \(percentText($0.currentPercent(at: now)))" },
+                entry.usage.limit("weekly_all").map { "weekly \(percentText($0.currentPercent(at: now)))" },
+            ].compactMap { $0 }
+            return "\(entry.label): \(parts.joined(separator: " · "))"
+        }
+        button.toolTip = lines.isEmpty ? "Claude usage: checking…" : lines.joined(separator: "\n")
     }
 }
