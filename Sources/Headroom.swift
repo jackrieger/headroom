@@ -676,27 +676,64 @@ struct ContentView: View {
     }
 }
 
-func barsIcon(top: Double?, bottom: Double?) -> NSImage {
-    let image = NSImage(size: NSSize(width: 16, height: 14), flipped: false) { _ in
-        NSColor.black.set()
-        for (value, y) in [(top, 8.0), (bottom, 1.5)] {
-            let track = NSRect(x: 0.5, y: y + 0.5, width: 15, height: 4)
-            let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
-            outline.lineWidth = 1
-            outline.stroke()
-            if let value, value > 0 {
-                let fill = NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 3), height: track.height)
-                NSBezierPath(roundedRect: fill, xRadius: 2, yRadius: 2).fill()
+func percentText(_ value: Double?) -> String {
+    value.map { "\(Int($0.rounded()))%" } ?? "–"
+}
+
+func levelColor(_ value: Double?) -> NSColor {
+    value.flatMap { Level(percent: $0).menuBarColor } ?? .labelColor
+}
+
+struct StatusSegment {
+    let label: String?
+    let session: Double?
+    let weekly: Double?
+    let headline: Double?
+}
+
+func drawBars(at origin: NSPoint, session: Double?, weekly: Double?) {
+    for (value, y) in [(session, origin.y + 8), (weekly, origin.y + 1.5)] {
+        let track = NSRect(x: origin.x + 0.5, y: y + 0.5, width: 15, height: 4)
+        NSColor.labelColor.setStroke()
+        let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
+        outline.lineWidth = 1
+        outline.stroke()
+        if let value, value > 0 {
+            levelColor(value).setFill()
+            let fill = NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 3), height: track.height)
+            NSBezierPath(roundedRect: fill, xRadius: 2, yRadius: 2).fill()
+        }
+    }
+}
+
+func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
+    let nameFont = NSFont.systemFont(ofSize: 7.5, weight: .semibold)
+    let percentFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+    let height: CGFloat = 22, barsWidth: CGFloat = 16, gap: CGFloat = 9
+    let percentBaseline = ((height - percentFont.capHeight - nameFont.capHeight - 2.5) / 2).rounded()
+    let nameBaseline = percentBaseline + percentFont.capHeight + 2.5
+    let names = segments.map { NSAttributedString(string: ($0.label ?? "").uppercased(), attributes: [.font: nameFont, .kern: 0.3]) }
+    let percents = segments.map { NSAttributedString(string: percentText($0.headline), attributes: [.font: percentFont]) }
+    let widths = zip(names, percents).map { name, percent in
+        barsWidth + 3 + ceil(max(name.size().width, percent.size().width))
+    }
+    let width = widths.reduce(0, +) + gap * CGFloat(segments.count - 1)
+    return NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
+        appearance.performAsCurrentDrawingAppearance {
+            var x: CGFloat = 0
+            for (index, segment) in segments.enumerated() {
+                drawBars(at: NSPoint(x: x, y: (height - 14) / 2), session: segment.session, weekly: segment.weekly)
+                let textX = x + barsWidth + 3
+                let name = NSMutableAttributedString(attributedString: names[index])
+                name.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: name.length))
+                name.draw(at: NSPoint(x: textX, y: nameBaseline + nameFont.descender))
+                NSAttributedString(string: percentText(segment.headline), attributes: [.font: percentFont, .foregroundColor: levelColor(segment.headline)])
+                    .draw(at: NSPoint(x: textX, y: percentBaseline + percentFont.descender))
+                x += widths[index] + gap
             }
         }
         return true
     }
-    image.isTemplate = true
-    return image
-}
-
-func percentText(_ value: Double?) -> String {
-    value.map { "\(Int($0.rounded()))%" } ?? "–"
 }
 
 @MainActor
@@ -706,6 +743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let popover = NSPopover()
     var cancellables = Set<AnyCancellable>()
     var timer: Timer?
+    var appearanceObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !UserDefaults.standard.bool(forKey: "registeredLoginItem") {
@@ -722,8 +760,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover)
-            button.imagePosition = .imageLeading
-            button.font = .monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .regular)
+            button.imagePosition = .imageOnly
+            appearanceObservation = button.observe(\.effectiveAppearance) { [weak self] _, _ in
+                Task { @MainActor in self?.updateStatusItem() }
+            }
         }
         updateStatusItem()
         model.objectWillChange
@@ -753,34 +793,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItem() {
-        guard let button = statusItem.button, let font = button.font else { return }
+        guard let button = statusItem.button else { return }
         let now = Date()
         let tracked = model.accounts.compactMap { account in
             model.state(account).usage.map { (label: model.label(account), usage: $0) }
         }
-        let busiest = tracked.max { ($0.usage.headline(at: now) ?? 0) < ($1.usage.headline(at: now) ?? 0) }?.usage
-        button.image = barsIcon(
-            top: busiest?.limit("session")?.currentPercent(at: now),
-            bottom: busiest?.limit("weekly_all")?.currentPercent(at: now))
-
-        if tracked.count > 1 {
-            let title = NSMutableAttributedString()
-            for (index, entry) in tracked.enumerated() {
-                let headline = entry.usage.headline(at: now)
-                let color = headline.flatMap { Level(percent: $0).menuBarColor } ?? .labelColor
-                title.append(NSAttributedString(string: (index == 0 ? " " : "  ") + entry.label + " ",
-                                                attributes: [.font: font, .foregroundColor: NSColor.labelColor]))
-                title.append(NSAttributedString(string: percentText(headline), attributes: [.font: font, .foregroundColor: color]))
-            }
-            button.attributedTitle = title
-        } else {
-            let headline = busiest?.headline(at: now)
-            if let headline, let color = Level(percent: headline).menuBarColor {
-                button.attributedTitle = NSAttributedString(string: " " + percentText(headline), attributes: [.foregroundColor: color, .font: font])
-            } else {
-                button.title = " " + percentText(headline)
-            }
+        let segments = tracked.map { entry in
+            StatusSegment(
+                label: entry.label,
+                session: entry.usage.limit("session")?.currentPercent(at: now),
+                weekly: entry.usage.limit("weekly_all")?.currentPercent(at: now),
+                headline: entry.usage.headline(at: now))
         }
+        button.image = statusImage(
+            segments.isEmpty ? [StatusSegment(label: "Claude", session: nil, weekly: nil, headline: nil)] : segments,
+            appearance: button.effectiveAppearance)
 
         let lines = tracked.map { entry -> String in
             let parts = [
@@ -790,5 +817,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "\(entry.label): \(parts.joined(separator: " · "))"
         }
         button.toolTip = lines.isEmpty ? "Claude usage: checking…" : lines.joined(separator: "\n")
+        button.setAccessibilityLabel(button.toolTip)
     }
 }

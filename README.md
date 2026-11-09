@@ -2,7 +2,7 @@
 
 Menu bar meter for your Claude plan limits, across one or more Claude accounts, so you can see a limit coming before you hit it.
 
-- The menu bar shows two small bars (top: the 5-hour session, bottom: the weekly limit) and the higher of the two percentages. With more than one account it shows each one, like `Team 37%  Pro 54%`, and the bars follow whichever account is closest to a limit. Percentages turn orange at 80% and red at 95%.
+- The menu bar shows a compact block for each account, in the style of iStat Menus: two small bars (top: the 5-hour session, bottom: the weekly limit), then the account's name in tiny capitals above the higher of the two percentages. Each bar and percentage turns orange at 80% and red at 95%.
 - Click it for every limit each account has (5-hour, weekly, and per-model weekly limits like Fable), each with its reset time.
 - The tick on each bar shows how much of that window has passed. When usage is ahead of the tick, Headroom estimates when you'll run out at the current pace, if that's before the reset.
 - Refreshes every 5 minutes, and when you open it if the last check is over a minute old.
