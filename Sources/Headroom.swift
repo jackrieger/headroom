@@ -693,14 +693,13 @@ struct StatusSegment {
 func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
     let barHeight = (rect.height - 3) / 2
     for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
-        let track = NSRect(x: rect.minX + 0.5, y: y + 0.5, width: rect.width - 1, height: barHeight - 1)
-        NSColor.labelColor.setStroke()
-        let outline = NSBezierPath(rect: track)
-        outline.lineWidth = 1
-        outline.stroke()
+        let track = NSRect(x: rect.minX, y: y, width: rect.width, height: barHeight)
+        NSColor.labelColor.withAlphaComponent(0.25).setFill()
+        track.fill(using: .sourceOver)
         if let value, value > 0 {
             levelColor(value).setFill()
-            NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 1.5), height: track.height).fill()
+            NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 1.5), height: track.height)
+                .fill(using: .sourceOver)
         }
     }
 }
@@ -708,7 +707,7 @@ func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
 func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
     let letterFont = NSFont.systemFont(ofSize: 6.5, weight: .bold)
     let height: CGFloat = 22, lineStep: CGFloat = 6.5, gap: CGFloat = 8
-    let barsSize = NSSize(width: 26, height: 17)
+    let barsSize = NSSize(width: 20, height: 13)
     let columns = segments.map { segment in
         (segment.label ?? "").uppercased().prefix(3).map { NSAttributedString(string: String($0), attributes: [.font: letterFont]) }
     }
