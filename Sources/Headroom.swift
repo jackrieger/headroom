@@ -688,47 +688,49 @@ struct StatusSegment {
     let label: String?
     let session: Double?
     let weekly: Double?
-    let headline: Double?
 }
 
-func drawBars(at origin: NSPoint, session: Double?, weekly: Double?) {
-    for (value, y) in [(session, origin.y + 8), (weekly, origin.y + 1.5)] {
-        let track = NSRect(x: origin.x + 0.5, y: y + 0.5, width: 15, height: 4)
+func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
+    let barHeight = (rect.height - 3) / 2
+    for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
+        let track = NSRect(x: rect.minX + 0.5, y: y + 0.5, width: rect.width - 1, height: barHeight - 1)
         NSColor.labelColor.setStroke()
-        let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
+        let outline = NSBezierPath(rect: track)
         outline.lineWidth = 1
         outline.stroke()
         if let value, value > 0 {
             levelColor(value).setFill()
-            let fill = NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 3), height: track.height)
-            NSBezierPath(roundedRect: fill, xRadius: 2, yRadius: 2).fill()
+            NSRect(x: track.minX, y: track.minY, width: max(track.width * min(value, 100) / 100, 1.5), height: track.height).fill()
         }
     }
 }
 
 func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
-    let nameFont = NSFont.systemFont(ofSize: 7.5, weight: .semibold)
-    let percentFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-    let height: CGFloat = 22, barsWidth: CGFloat = 16, gap: CGFloat = 9
-    let percentBaseline = ((height - percentFont.capHeight - nameFont.capHeight - 2.5) / 2).rounded()
-    let nameBaseline = percentBaseline + percentFont.capHeight + 2.5
-    let names = segments.map { NSAttributedString(string: ($0.label ?? "").uppercased(), attributes: [.font: nameFont, .kern: 0.3]) }
-    let percents = segments.map { NSAttributedString(string: percentText($0.headline), attributes: [.font: percentFont]) }
-    let widths = zip(names, percents).map { name, percent in
-        barsWidth + 3 + ceil(max(name.size().width, percent.size().width))
+    let letterFont = NSFont.systemFont(ofSize: 6.5, weight: .bold)
+    let height: CGFloat = 22, lineStep: CGFloat = 6.5, gap: CGFloat = 8
+    let barsSize = NSSize(width: 26, height: 17)
+    let columns = segments.map { segment in
+        (segment.label ?? "").uppercased().prefix(3).map { NSAttributedString(string: String($0), attributes: [.font: letterFont]) }
     }
+    let columnWidths = columns.map { ceil($0.map { $0.size().width }.max() ?? 0) }
+    let widths = columnWidths.map { $0 > 0 ? $0 + 2 + barsSize.width : barsSize.width }
     let width = widths.reduce(0, +) + gap * CGFloat(segments.count - 1)
     return NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
         appearance.performAsCurrentDrawingAppearance {
             var x: CGFloat = 0
             for (index, segment) in segments.enumerated() {
-                drawBars(at: NSPoint(x: x, y: (height - 14) / 2), session: segment.session, weekly: segment.weekly)
-                let textX = x + barsWidth + 3
-                let name = NSMutableAttributedString(attributedString: names[index])
-                name.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: name.length))
-                name.draw(at: NSPoint(x: textX, y: nameBaseline + nameFont.descender))
-                NSAttributedString(string: percentText(segment.headline), attributes: [.font: percentFont, .foregroundColor: levelColor(segment.headline)])
-                    .draw(at: NSPoint(x: textX, y: percentBaseline + percentFont.descender))
+                let column = columns[index]
+                let span = CGFloat(max(column.count - 1, 0)) * lineStep + letterFont.capHeight
+                var baseline = (height + span) / 2 - letterFont.capHeight
+                for letter in column {
+                    let colored = NSMutableAttributedString(attributedString: letter)
+                    colored.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: colored.length))
+                    colored.draw(at: NSPoint(x: x + (columnWidths[index] - letter.size().width) / 2, y: baseline + letterFont.descender))
+                    baseline -= lineStep
+                }
+                let barsX = x + (columnWidths[index] > 0 ? columnWidths[index] + 2 : 0)
+                drawBars(in: NSRect(x: barsX, y: (height - barsSize.height) / 2, width: barsSize.width, height: barsSize.height),
+                         session: segment.session, weekly: segment.weekly)
                 x += widths[index] + gap
             }
         }
@@ -802,11 +804,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             StatusSegment(
                 label: entry.label,
                 session: entry.usage.limit("session")?.currentPercent(at: now),
-                weekly: entry.usage.limit("weekly_all")?.currentPercent(at: now),
-                headline: entry.usage.headline(at: now))
+                weekly: entry.usage.limit("weekly_all")?.currentPercent(at: now))
         }
         button.image = statusImage(
-            segments.isEmpty ? [StatusSegment(label: "Claude", session: nil, weekly: nil, headline: nil)] : segments,
+            segments.isEmpty ? [StatusSegment(label: "Claude", session: nil, weekly: nil)] : segments,
             appearance: button.effectiveAppearance)
 
         let lines = tracked.map { entry -> String in
