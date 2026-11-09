@@ -274,6 +274,9 @@ final class Model: ObservableObject {
     @Published private(set) var accounts: [AccountConfig]
     @Published var states: [String: AccountState] = [:]
     @Published var signIns: [String: SignInWatch] = [:]
+    @Published var menuBarStyle = MenuBarStyle(rawValue: UserDefaults.standard.string(forKey: "menuBarStyle") ?? "") ?? .hash {
+        didSet { UserDefaults.standard.set(menuBarStyle.rawValue, forKey: "menuBarStyle") }
+    }
     var closePopover: (() -> Void)?
     private var signInTimer: Timer?
 
@@ -664,6 +667,17 @@ struct ContentView: View {
                 .help("Open the usage page on claude.ai")
             }
             HStack {
+                Text("Menu bar style").foregroundStyle(.secondary)
+                Spacer()
+                Picker("Menu bar style", selection: $model.menuBarStyle) {
+                    ForEach(MenuBarStyle.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .fixedSize()
+            }
+            HStack {
                 Toggle("Open at login", isOn: $openAtLogin)
                     .toggleStyle(.checkbox)
                     .onChange(of: openAtLogin) { _, enabled in
@@ -695,12 +709,53 @@ struct StatusSegment {
     let weekly: Double?
 }
 
-func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
-    let cells = 10, cellWidth: CGFloat = 1.5, pitch: CGFloat = 2.5, dot: CGFloat = 1.5
+enum MenuBarStyle: String, CaseIterable, Identifiable {
+    case hash, dots, horizontal, vertical, rings, numbers
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hash: "Hash and dots"
+        case .dots: "Dot matrix"
+        case .horizontal: "Horizontal meters"
+        case .vertical: "Vertical meters"
+        case .rings: "Rings"
+        case .numbers: "Stacked numbers"
+        }
+    }
+}
+
+let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
+var trackColor: NSColor { NSColor.labelColor.withAlphaComponent(0.25) }
+
+func filledCells(_ value: Double?, of cells: Int = 10) -> Int {
+    guard let value, value > 0 else { return 0 }
+    return max(Int((min(value, 100) / 100 * Double(cells)).rounded()), 1)
+}
+
+func numberLines(_ segment: StatusSegment) -> [NSAttributedString] {
+    [segment.session, segment.weekly].map {
+        NSAttributedString(string: percentText($0), attributes: [.font: numberFont, .foregroundColor: levelColor($0)])
+    }
+}
+
+func segmentSize(_ style: MenuBarStyle, _ segment: StatusSegment) -> NSSize {
+    switch style {
+    case .hash, .dots: NSSize(width: 24, height: 12)
+    case .horizontal: NSSize(width: 20, height: 13)
+    case .vertical: NSSize(width: 10, height: 16)
+    case .rings: NSSize(width: 17, height: 17)
+    case .numbers: NSSize(width: ceil(numberLines(segment).map { $0.size().width }.max() ?? 0), height: 18)
+    }
+}
+
+func drawHash(in rect: NSRect, session: Double?, weekly: Double?) {
+    let cellWidth: CGFloat = 1.5, pitch: CGFloat = 2.5, dot: CGFloat = 1.5
     let barHeight = (rect.height - 3) / 2
     for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
-        let filled = value.map { $0 > 0 ? max(Int((min($0, 100) / 10).rounded()), 1) : 0 } ?? 0
-        for cell in 0..<cells {
+        let filled = filledCells(value)
+        for cell in 0..<10 {
             let x = rect.minX + CGFloat(cell) * pitch
             if cell < filled {
                 levelColor(value).setFill()
@@ -713,15 +768,87 @@ func drawBars(in rect: NSRect, session: Double?, weekly: Double?) {
     }
 }
 
-func statusImage(_ segments: [StatusSegment], appearance: NSAppearance) -> NSImage {
+func drawDots(in rect: NSRect, session: Double?, weekly: Double?) {
+    let dot: CGFloat = 1.5, pitch: CGFloat = 2.5
+    for (value, y) in [(session, rect.minY + 7), (weekly, rect.minY + 0.5)] {
+        let filled = filledCells(value)
+        for column in 0..<10 {
+            (column < filled ? levelColor(value) : trackColor).setFill()
+            for row in 0..<2 {
+                NSBezierPath(ovalIn: NSRect(x: rect.minX + CGFloat(column) * pitch, y: y + CGFloat(row) * pitch, width: dot, height: dot)).fill()
+            }
+        }
+    }
+}
+
+func drawHorizontal(in rect: NSRect, session: Double?, weekly: Double?) {
+    let barHeight = (rect.height - 3) / 2
+    for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
+        trackColor.setFill()
+        NSRect(x: rect.minX, y: y, width: rect.width, height: barHeight).fill(using: .sourceOver)
+        if let value, value > 0 {
+            levelColor(value).setFill()
+            NSRect(x: rect.minX, y: y, width: max(rect.width * min(value, 100) / 100, 1.5), height: barHeight).fill(using: .sourceOver)
+        }
+    }
+}
+
+func drawVertical(in rect: NSRect, session: Double?, weekly: Double?) {
+    let barWidth: CGFloat = 4
+    for (value, x) in [(session, rect.minX), (weekly, rect.maxX - barWidth)] {
+        trackColor.setFill()
+        NSRect(x: x, y: rect.minY, width: barWidth, height: rect.height).fill(using: .sourceOver)
+        if let value, value > 0 {
+            levelColor(value).setFill()
+            NSRect(x: x, y: rect.minY, width: barWidth, height: max(rect.height * min(value, 100) / 100, 1)).fill(using: .sourceOver)
+        }
+    }
+}
+
+func drawRings(in rect: NSRect, session: Double?, weekly: Double?) {
+    let center = NSPoint(x: rect.midX, y: rect.midY), lineWidth: CGFloat = 2.5
+    for (value, radius) in [(weekly, rect.width / 2 - 1.25), (session, rect.width / 2 - 4.75)] {
+        let track = NSBezierPath()
+        track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
+        track.lineWidth = lineWidth
+        trackColor.setStroke()
+        track.stroke()
+        if let value, value > 0 {
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: center, radius: radius, startAngle: 90, endAngle: 90 - 360 * min(value, 100) / 100, clockwise: true)
+            arc.lineWidth = lineWidth
+            levelColor(value).setStroke()
+            arc.stroke()
+        }
+    }
+}
+
+func drawNumbers(in rect: NSRect, segment: StatusSegment) {
+    let lines = numberLines(segment), gap: CGFloat = 3
+    let bottomBaseline = (rect.midY - (numberFont.capHeight * 2 + gap) / 2).rounded()
+    for (line, baseline) in zip(lines, [bottomBaseline + numberFont.capHeight + gap, bottomBaseline]) {
+        line.draw(at: NSPoint(x: rect.maxX - line.size().width, y: baseline + numberFont.descender))
+    }
+}
+
+func statusImage(_ segments: [StatusSegment], style: MenuBarStyle, appearance: NSAppearance) -> NSImage {
     let height: CGFloat = 22, gap: CGFloat = 11
-    let barsSize = NSSize(width: 24, height: 12)
-    let width = barsSize.width * CGFloat(segments.count) + gap * CGFloat(segments.count - 1)
+    let sizes = segments.map { segmentSize(style, $0) }
+    let width = sizes.map(\.width).reduce(0, +) + gap * CGFloat(segments.count - 1)
     return NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
         appearance.performAsCurrentDrawingAppearance {
-            for (index, segment) in segments.enumerated() {
-                let origin = NSPoint(x: CGFloat(index) * (barsSize.width + gap), y: (height - barsSize.height) / 2)
-                drawBars(in: NSRect(origin: origin, size: barsSize), session: segment.session, weekly: segment.weekly)
+            var x: CGFloat = 0
+            for (segment, size) in zip(segments, sizes) {
+                let rect = NSRect(x: x, y: ((height - size.height) / 2).rounded(), width: size.width, height: size.height)
+                switch style {
+                case .hash: drawHash(in: rect, session: segment.session, weekly: segment.weekly)
+                case .dots: drawDots(in: rect, session: segment.session, weekly: segment.weekly)
+                case .horizontal: drawHorizontal(in: rect, session: segment.session, weekly: segment.weekly)
+                case .vertical: drawVertical(in: rect, session: segment.session, weekly: segment.weekly)
+                case .rings: drawRings(in: rect, session: segment.session, weekly: segment.weekly)
+                case .numbers: drawNumbers(in: rect, segment: segment)
+                }
+                x += size.width + gap
             }
         }
         return true
@@ -797,6 +924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         button.image = statusImage(
             segments.isEmpty ? [StatusSegment(session: nil, weekly: nil)] : segments,
+            style: model.menuBarStyle,
             appearance: button.effectiveAppearance)
 
         let lines = tracked.map { entry -> String in

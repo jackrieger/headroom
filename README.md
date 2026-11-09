@@ -2,7 +2,14 @@
 
 Menu bar meter for your Claude plan limits, across one or more Claude accounts, so you can see a limit coming before you hit it.
 
-- The menu bar shows two rows for each account, drawn like an old terminal loading bar (`▮▮▮▮······`): ten cells per row, one per 10%, solid where used and a dot where not. Top row: the 5-hour session. Bottom row: the weekly limit. Accounts are sorted alphabetically by name, here and in the popover. Each row turns orange at 80% and red at 95%. Hover for each account's name and exact percentages.
+- The menu bar shows a small meter for each account, for both the 5-hour session and the weekly limit. Accounts are sorted alphabetically by name, here and in the popover. Each meter turns orange at 80% and red at 95%. Hover for each account's name and exact percentages.
+- Pick the meter style under Menu bar style in the popover:
+  - **Hash and dots** (default): like an old terminal loading bar (`▮▮▮▮······`), ten cells per row, one per 10%. Top row 5-hour, bottom row weekly.
+  - **Dot matrix**: the same ten steps as a braille-style dot grid.
+  - **Horizontal meters**: solid bars. Top 5-hour, bottom weekly.
+  - **Vertical meters**: two columns that fill from the bottom. Left 5-hour, right weekly.
+  - **Rings**: outer ring weekly, inner ring 5-hour, filling clockwise from the top.
+  - **Stacked numbers**: tiny percentages, 5-hour above weekly.
 - Click it for every limit each account has (5-hour, weekly, and per-model weekly limits like Fable), each with its reset time.
 - The tick on each bar shows how much of that window has passed. When usage is ahead of the tick, Headroom estimates when you'll run out at the current pace, if that's before the reset.
 - Refreshes every 5 minutes, and when you open it if the last check is over a minute old.
