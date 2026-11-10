@@ -41,6 +41,7 @@ struct Limit: Identifiable, Sendable {
     let percent: Double
     let resetsAt: Date?
     let window: TimeInterval?
+    var model: String? = nil
 
     func currentPercent(at now: Date) -> Double {
         if let resetsAt, resetsAt <= now { return 0 }
@@ -143,7 +144,8 @@ func usage(from body: [String: Any]) throws(UsageError) -> Usage {
             title: limitTitle(kind: kind, model: model),
             percent: percent,
             resetsAt: date(row["resets_at"]),
-            window: limitWindow(kind: kind, group: row["group"] as? String))
+            window: limitWindow(kind: kind, group: row["group"] as? String),
+            model: model)
     }
     guard !limits.isEmpty else { throw UsageError(message: "Claude Code reported no plan limits.") }
     return Usage(plan: plan, limits: limits, fetchedAt: Date())
@@ -274,6 +276,9 @@ final class Model: ObservableObject {
     @Published private(set) var accounts: [AccountConfig]
     @Published var states: [String: AccountState] = [:]
     @Published var signIns: [String: SignInWatch] = [:]
+    @Published var showModelLimits = UserDefaults.standard.object(forKey: "showModelLimits") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showModelLimits, forKey: "showModelLimits") }
+    }
     @Published var refreshMinutes = refreshOptions.contains(UserDefaults.standard.integer(forKey: "refreshMinutes"))
         ? UserDefaults.standard.integer(forKey: "refreshMinutes") : 5 {
         didSet {
@@ -324,6 +329,10 @@ final class Model: ObservableObject {
     }
 
     var refreshing: Bool { states.values.contains { $0.refreshing } }
+
+    var modelLimitNames: [String] {
+        Set(accounts.flatMap { state($0).usage?.limits.compactMap(\.model) ?? [] }).sorted()
+    }
 
     var oldestFetch: Date? { accounts.compactMap { state($0).usage?.fetchedAt }.min() }
 
@@ -538,7 +547,7 @@ struct AccountSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let usage = state.usage {
-                ForEach(usage.limits) { LimitRow(limit: $0, now: now) }
+                ForEach(usage.limits.filter { model.showModelLimits || $0.model == nil }) { LimitRow(limit: $0, now: now) }
             }
             if model.signIns[account.id] != nil, state.usage == nil {
                 HStack(spacing: 6) {
@@ -696,6 +705,14 @@ struct ContentView: View {
                 .pickerStyle(.menu)
                 .controlSize(.small)
                 .fixedSize()
+            }
+            if !model.modelLimitNames.isEmpty {
+                HStack {
+                    Toggle(model.modelLimitNames.count == 1 ? "Show \(model.modelLimitNames[0]) limit" : "Show per-model limits",
+                           isOn: $model.showModelLimits)
+                        .toggleStyle(.checkbox)
+                    Spacer()
+                }
             }
             HStack {
                 Toggle("Open at login", isOn: $openAtLogin)
