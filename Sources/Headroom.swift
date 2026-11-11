@@ -474,7 +474,6 @@ func whenText(_ date: Date, now: Date) -> String {
 
 struct UsageBar: View {
     let percent: Double
-    let elapsed: Double?
 
     var body: some View {
         GeometryReader { geometry in
@@ -483,17 +482,10 @@ struct UsageBar: View {
                 Capsule()
                     .fill(Level(percent: percent).color)
                     .frame(width: percent > 0 ? max(geometry.size.width * min(percent, 100) / 100, 6) : 0)
-                if let elapsed {
-                    Capsule()
-                        .fill(Color.primary.opacity(0.6))
-                        .frame(width: 2, height: geometry.size.height + 6)
-                        .offset(x: geometry.size.width * elapsed - 1)
-                }
             }
         }
         .frame(height: 6)
         .padding(.vertical, 3)
-        .help(elapsed == nil ? "" : "The tick marks how much of this window has passed")
     }
 }
 
@@ -513,7 +505,7 @@ struct LimitRow: View {
                     .monospacedDigit()
                     .foregroundStyle(level == .normal ? Color.primary : level.color)
             }
-            UsageBar(percent: percent, elapsed: limit.elapsedFraction(at: now))
+            UsageBar(percent: percent)
             if let resetsAt = limit.resetsAt, resetsAt > now {
                 Text("\(percent >= 100 ? "Limit reached · resets" : "Resets") \(whenText(resetsAt, now: now))")
                     .font(.caption)

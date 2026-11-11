@@ -11,7 +11,7 @@ Menu bar meter for your Claude plan limits, across one or more Claude accounts, 
   - **Stacked numbers**: tiny percentages, 5-hour above weekly.
   - **Vertical meters**: two columns that fill from the bottom. Left 5-hour, right weekly.
 - Click it for every limit each account has (5-hour, weekly, and per-model weekly limits like Fable), each with its reset time. Uncheck Show Fable limit in the popover to hide the per-model ones.
-- The tick on each bar shows how much of that window has passed. When usage is ahead of the tick, Headroom estimates when you'll run out at the current pace, if that's before the reset.
+- If you're using a limit faster than its window is passing, Headroom estimates when you'll run out at the current pace, if that's before the reset.
 - Refreshes every 5 minutes by default. Pick 1, 2, 5, 10, 15 or 30 minutes under Refresh every in the popover. It also refreshes when you open it if the last check is over a minute old.
 
 ## Where the numbers come from
