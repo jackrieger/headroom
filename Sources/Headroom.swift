@@ -64,10 +64,34 @@ struct Limit: Identifiable, Sendable {
     }
 }
 
+struct Credits: Sendable {
+    let enabled: Bool
+    let currency: String
+    var used: Double?
+    var limit: Double?
+    var balance: Double?
+
+    func format(_ amount: Double) -> String {
+        amount.formatted(.currency(code: currency))
+    }
+
+    var summary: String {
+        guard enabled else { return "Usage credits off" }
+        var parts = ["Usage credits on"]
+        if let used {
+            parts.append("\(format(used))\(limit.map { " of \(format($0))" } ?? "") used this month")
+        }
+        if limit == nil { parts.append("no monthly limit") }
+        if let balance { parts.append("\(format(balance)) left") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 struct Usage: Sendable {
     let plan: String?
     let limits: [Limit]
     let fetchedAt: Date
+    var credits: Credits? = nil
 
     func limit(_ kind: String) -> Limit? { limits.first { $0.kind == kind } }
 
@@ -89,6 +113,26 @@ func date(_ value: Any?) -> Date? {
     guard let text = value as? String else { return nil }
     let withoutFraction = text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
     return ISO8601DateFormatter().date(from: withoutFraction)
+}
+
+func money(_ value: Any?, exponent: Int) -> Double? {
+    if let amount = value as? [String: Any], let minor = number(amount["amount_minor"]) {
+        return minor / pow(10, Double(number(amount["exponent"]).map(Int.init) ?? exponent))
+    }
+    return number(value).map { $0 / pow(10, Double(exponent)) }
+}
+
+func credits(from rateLimits: [String: Any]) -> Credits? {
+    let extra = rateLimits["extra_usage"] as? [String: Any]
+    let spend = rateLimits["spend"] as? [String: Any]
+    guard extra != nil || spend != nil else { return nil }
+    let exponent = number(extra?["decimal_places"]).map(Int.init) ?? 2
+    let currency = ((spend?["used"] as? [String: Any])?["currency"] as? String) ?? extra?["currency"] as? String ?? "USD"
+    var credits = Credits(enabled: (extra?["is_enabled"] as? Bool ?? spend?["enabled"] as? Bool) == true, currency: currency.uppercased())
+    credits.used = money(spend?["used"], exponent: exponent) ?? money(extra?["used_credits"], exponent: exponent)
+    credits.limit = money(spend?["limit"], exponent: exponent) ?? money(extra?["monthly_limit"], exponent: exponent)
+    credits.balance = money(spend?["balance"], exponent: exponent)
+    return credits
 }
 
 func planName(_ type: String) -> String {
@@ -156,7 +200,7 @@ func usage(from body: [String: Any]) throws(UsageError) -> Usage {
             creditsAvailable: creditsAvailable)
     }
     guard !limits.isEmpty else { throw UsageError(message: "Claude Code reported no plan limits.") }
-    return Usage(plan: plan, limits: limits, fetchedAt: Date())
+    return Usage(plan: plan, limits: limits, fetchedAt: Date(), credits: credits(from: rateLimits))
 }
 
 func findClaude() -> URL? {
@@ -555,6 +599,12 @@ struct AccountSection: View {
             }
             if let usage = state.usage {
                 ForEach(usage.limits.filter { model.showModelLimits || $0.model == nil }) { LimitRow(limit: $0, now: now) }
+                if let credits = usage.credits {
+                    Text(credits.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if model.signIns[account.id] != nil, state.usage == nil {
                 HStack(spacing: 6) {

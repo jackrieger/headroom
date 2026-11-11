@@ -4,6 +4,7 @@ Menu bar meter for your Claude plan limits, across one or more Claude accounts, 
 
 - The menu bar shows a small meter for each account, for both the 5-hour session and the weekly limit. Accounts are sorted alphabetically by name, here and in the popover. Each meter turns orange at 80% and red at 95%. Hover for each account's name and exact percentages.
 - When usage credits (extra usage) are on and a limit is used up, every request against that limit is billed to credits, so that row turns blue in the menu bar and the popover says "Using usage credits". Claude Code's usage reply has no live in-use flag, so Headroom works this out from the reply: credits on, spending cap not reached, and the limit at 100%.
+- Under each account's limits, the popover shows whether usage credits are on, how much they've cost this month, the monthly limit if you set one, and any prepaid balance Claude reports.
 - Pick the meter style under Menu bar style in the popover:
   - **Dot matrix** (default): a braille-style dot grid, ten columns per row, one per 10%. Top rows 5-hour, bottom rows weekly.
   - **Hash and dots**: like an old terminal loading bar (`▮▮▮▮······`), solid where used and a dot where not.
