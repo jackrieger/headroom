@@ -42,11 +42,14 @@ struct Limit: Identifiable, Sendable {
     let resetsAt: Date?
     let window: TimeInterval?
     var model: String? = nil
+    var creditsAvailable = false
 
     func currentPercent(at now: Date) -> Double {
         if let resetsAt, resetsAt <= now { return 0 }
         return percent
     }
+
+    func onCredits(at now: Date) -> Bool { creditsAvailable && currentPercent(at: now) >= 100 }
 
     func elapsedFraction(at now: Date) -> Double? {
         guard let resetsAt, let window, resetsAt > now else { return nil }
@@ -133,6 +136,10 @@ func usage(from body: [String: Any]) throws(UsageError) -> Usage {
         if plan == nil { throw UsageError(message: "Not signed in.", signedOut: true) }
         throw UsageError(message: "Claude Code couldn't read your plan limits just now.")
     }
+    let extra = rateLimits["extra_usage"] as? [String: Any]
+    let creditsAvailable = extra?["is_enabled"] as? Bool == true
+        && extra?["spend_limit_reached"] as? Bool != true
+        && (number(extra?["utilization"]) ?? 0) < 100
     let rows = rateLimits["limits"] as? [[String: Any]] ?? []
     let limits = rows.enumerated().compactMap { index, row -> Limit? in
         guard let percent = number(row["percent"]) else { return nil }
@@ -145,7 +152,8 @@ func usage(from body: [String: Any]) throws(UsageError) -> Usage {
             percent: percent,
             resetsAt: date(row["resets_at"]),
             window: limitWindow(kind: kind, group: row["group"] as? String),
-            model: model)
+            model: model,
+            creditsAvailable: creditsAvailable)
     }
     guard !limits.isEmpty else { throw UsageError(message: "Claude Code reported no plan limits.") }
     return Usage(plan: plan, limits: limits, fetchedAt: Date())
@@ -474,13 +482,14 @@ func whenText(_ date: Date, now: Date) -> String {
 
 struct UsageBar: View {
     let percent: Double
+    let color: Color
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.1))
                 Capsule()
-                    .fill(Level(percent: percent).color)
+                    .fill(color)
                     .frame(width: percent > 0 ? max(geometry.size.width * min(percent, 100) / 100, 6) : 0)
             }
         }
@@ -496,6 +505,8 @@ struct LimitRow: View {
     var body: some View {
         let percent = limit.currentPercent(at: now)
         let level = Level(percent: percent)
+        let onCredits = limit.onCredits(at: now)
+        let color = onCredits ? Color(nsColor: .systemBlue) : level.color
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
                 Text(limit.title).font(.callout.weight(.medium))
@@ -503,10 +514,14 @@ struct LimitRow: View {
                 Text("\(Int(percent.rounded()))%")
                     .font(.callout.weight(.semibold))
                     .monospacedDigit()
-                    .foregroundStyle(level == .normal ? Color.primary : level.color)
+                    .foregroundStyle(level == .normal && !onCredits ? Color.primary : color)
             }
-            UsageBar(percent: percent)
-            if let resetsAt = limit.resetsAt, resetsAt > now {
+            UsageBar(percent: percent, color: color)
+            if onCredits {
+                Text("Using usage credits\(limit.resetsAt.map { " · limit resets \(whenText($0, now: now))" } ?? "")")
+                    .font(.caption)
+                    .foregroundStyle(color)
+            } else if let resetsAt = limit.resetsAt, resetsAt > now {
                 Text("\(percent >= 100 ? "Limit reached · resets" : "Resets") \(whenText(resetsAt, now: now))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -736,6 +751,11 @@ func levelColor(_ value: Double?) -> NSColor {
 struct StatusSegment {
     let session: Double?
     let weekly: Double?
+    var sessionOnCredits = false
+    var weeklyOnCredits = false
+
+    var sessionColor: NSColor { sessionOnCredits ? .systemBlue : levelColor(session) }
+    var weeklyColor: NSColor { weeklyOnCredits ? .systemBlue : levelColor(weekly) }
 }
 
 enum MenuBarStyle: String, CaseIterable, Identifiable {
@@ -764,8 +784,8 @@ func filledCells(_ value: Double?, of cells: Int = 10) -> Int {
 }
 
 func numberLines(_ segment: StatusSegment) -> [NSAttributedString] {
-    [segment.session, segment.weekly].map {
-        NSAttributedString(string: percentText($0), attributes: [.font: numberFont, .foregroundColor: levelColor($0)])
+    [(segment.session, segment.sessionColor), (segment.weekly, segment.weeklyColor)].map { value, color in
+        NSAttributedString(string: percentText(value), attributes: [.font: numberFont, .foregroundColor: color])
     }
 }
 
@@ -779,15 +799,15 @@ func segmentSize(_ style: MenuBarStyle, _ segment: StatusSegment) -> NSSize {
     }
 }
 
-func drawHash(in rect: NSRect, session: Double?, weekly: Double?) {
+func drawHash(in rect: NSRect, _ segment: StatusSegment) {
     let cellWidth: CGFloat = 1.5, pitch: CGFloat = 2.5, dot: CGFloat = 1.5
     let barHeight = (rect.height - 3) / 2
-    for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
+    for (value, color, y) in [(segment.session, segment.sessionColor, rect.minY + barHeight + 3), (segment.weekly, segment.weeklyColor, rect.minY)] {
         let filled = filledCells(value)
         for cell in 0..<10 {
             let x = rect.minX + CGFloat(cell) * pitch
             if cell < filled {
-                levelColor(value).setFill()
+                color.setFill()
                 NSRect(x: x, y: y, width: cellWidth, height: barHeight).fill(using: .sourceOver)
             } else {
                 NSColor.labelColor.withAlphaComponent(0.45).setFill()
@@ -797,12 +817,12 @@ func drawHash(in rect: NSRect, session: Double?, weekly: Double?) {
     }
 }
 
-func drawDots(in rect: NSRect, session: Double?, weekly: Double?) {
+func drawDots(in rect: NSRect, _ segment: StatusSegment) {
     let dot: CGFloat = 1.5, pitch: CGFloat = 2.5
-    for (value, y) in [(session, rect.minY + 7), (weekly, rect.minY + 0.5)] {
+    for (value, color, y) in [(segment.session, segment.sessionColor, rect.minY + 7), (segment.weekly, segment.weeklyColor, rect.minY + 0.5)] {
         let filled = filledCells(value)
         for column in 0..<10 {
-            (column < filled ? levelColor(value) : trackColor).setFill()
+            (column < filled ? color : trackColor).setFill()
             for row in 0..<2 {
                 NSBezierPath(ovalIn: NSRect(x: rect.minX + CGFloat(column) * pitch, y: y + CGFloat(row) * pitch, width: dot, height: dot)).fill()
             }
@@ -810,33 +830,33 @@ func drawDots(in rect: NSRect, session: Double?, weekly: Double?) {
     }
 }
 
-func drawHorizontal(in rect: NSRect, session: Double?, weekly: Double?) {
+func drawHorizontal(in rect: NSRect, _ segment: StatusSegment) {
     let barHeight = (rect.height - 3) / 2
-    for (value, y) in [(session, rect.minY + barHeight + 3), (weekly, rect.minY)] {
+    for (value, color, y) in [(segment.session, segment.sessionColor, rect.minY + barHeight + 3), (segment.weekly, segment.weeklyColor, rect.minY)] {
         trackColor.setFill()
         NSRect(x: rect.minX, y: y, width: rect.width, height: barHeight).fill(using: .sourceOver)
         if let value, value > 0 {
-            levelColor(value).setFill()
+            color.setFill()
             NSRect(x: rect.minX, y: y, width: max(rect.width * min(value, 100) / 100, 1.5), height: barHeight).fill(using: .sourceOver)
         }
     }
 }
 
-func drawVertical(in rect: NSRect, session: Double?, weekly: Double?) {
+func drawVertical(in rect: NSRect, _ segment: StatusSegment) {
     let barWidth: CGFloat = 4
-    for (value, x) in [(session, rect.minX), (weekly, rect.maxX - barWidth)] {
+    for (value, color, x) in [(segment.session, segment.sessionColor, rect.minX), (segment.weekly, segment.weeklyColor, rect.maxX - barWidth)] {
         trackColor.setFill()
         NSRect(x: x, y: rect.minY, width: barWidth, height: rect.height).fill(using: .sourceOver)
         if let value, value > 0 {
-            levelColor(value).setFill()
+            color.setFill()
             NSRect(x: x, y: rect.minY, width: barWidth, height: max(rect.height * min(value, 100) / 100, 1)).fill(using: .sourceOver)
         }
     }
 }
 
-func drawRings(in rect: NSRect, session: Double?, weekly: Double?) {
+func drawRings(in rect: NSRect, _ segment: StatusSegment) {
     let center = NSPoint(x: rect.midX, y: rect.midY), lineWidth: CGFloat = 2.5
-    for (value, radius) in [(weekly, rect.width / 2 - 1.25), (session, rect.width / 2 - 4.75)] {
+    for (value, color, radius) in [(segment.weekly, segment.weeklyColor, rect.width / 2 - 1.25), (segment.session, segment.sessionColor, rect.width / 2 - 4.75)] {
         let track = NSBezierPath()
         track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
         track.lineWidth = lineWidth
@@ -846,7 +866,7 @@ func drawRings(in rect: NSRect, session: Double?, weekly: Double?) {
             let arc = NSBezierPath()
             arc.appendArc(withCenter: center, radius: radius, startAngle: 90, endAngle: 90 - 360 * min(value, 100) / 100, clockwise: true)
             arc.lineWidth = lineWidth
-            levelColor(value).setStroke()
+            color.setStroke()
             arc.stroke()
         }
     }
@@ -870,11 +890,11 @@ func statusImage(_ segments: [StatusSegment], style: MenuBarStyle, appearance: N
             for (segment, size) in zip(segments, sizes) {
                 let rect = NSRect(x: x, y: ((height - size.height) / 2).rounded(), width: size.width, height: size.height)
                 switch style {
-                case .hash: drawHash(in: rect, session: segment.session, weekly: segment.weekly)
-                case .dots: drawDots(in: rect, session: segment.session, weekly: segment.weekly)
-                case .horizontal: drawHorizontal(in: rect, session: segment.session, weekly: segment.weekly)
-                case .vertical: drawVertical(in: rect, session: segment.session, weekly: segment.weekly)
-                case .rings: drawRings(in: rect, session: segment.session, weekly: segment.weekly)
+                case .hash: drawHash(in: rect, segment)
+                case .dots: drawDots(in: rect, segment)
+                case .horizontal: drawHorizontal(in: rect, segment)
+                case .vertical: drawVertical(in: rect, segment)
+                case .rings: drawRings(in: rect, segment)
                 case .numbers: drawNumbers(in: rect, segment: segment)
                 }
                 x += size.width + gap
@@ -951,7 +971,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let segments = tracked.map { entry in
             StatusSegment(
                 session: entry.usage.limit("session")?.currentPercent(at: now),
-                weekly: entry.usage.limit("weekly_all")?.currentPercent(at: now))
+                weekly: entry.usage.limit("weekly_all")?.currentPercent(at: now),
+                sessionOnCredits: entry.usage.limit("session")?.onCredits(at: now) ?? false,
+                weeklyOnCredits: entry.usage.limit("weekly_all")?.onCredits(at: now) ?? false)
         }
         button.image = statusImage(
             segments.isEmpty ? [StatusSegment(session: nil, weekly: nil)] : segments,
