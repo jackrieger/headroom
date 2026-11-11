@@ -19,7 +19,7 @@ enum Level {
 
     var color: Color {
         switch self {
-        case .normal: .accentColor
+        case .normal: .primary
         case .warning: .orange
         case .critical: .red
         }
