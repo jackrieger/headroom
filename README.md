@@ -32,14 +32,38 @@ If you sign in to an account Headroom already tracks, its section warns you. Use
 
 The Claude desktop app keeps its own login, which Headroom can't read. To track the account the desktop app uses, add it here too.
 
-## Build
+## Install
+
+There are no prebuilt releases, so you build Headroom from source. You need an Apple silicon Mac on macOS 14 or later, the Swift compiler (Xcode or the Command Line Tools: `xcode-select --install`), and Claude Code at `~/.local/bin/claude`, signed in.
 
 ```sh
-./build.sh            # builds build/Headroom.app
-./build.sh --install  # copies to /Applications and launches it
+git clone https://github.com/jackrieger/headroom.git
+cd headroom
+./build.sh --install
 ```
 
+`./build.sh --install` does this:
+
+1. Compiles `Sources/*.swift` into `build/Headroom.app`.
+2. Signs the app with the first Apple Development certificate in your Keychain, or ad-hoc if you don't have one. A real certificate keeps the login item registered across rebuilds; an ad-hoc signature changes with every build.
+3. Quits any running Headroom, replaces `/Applications/Headroom.app`, and launches it.
+
+Run `./build.sh` without `--install` to build `build/Headroom.app` only.
+
 Headroom adds itself as a login item on first launch. Turn that off with the checkbox in its popover.
+
+To update, `git pull` and run `./build.sh --install` again. To uninstall, quit Headroom, delete `/Applications/Headroom.app`, and, if you added accounts, remove each one from the popover first and then delete `~/Library/Application Support/Headroom`.
+
+### Build fails with "plugin for module 'SwiftUIMacros' not found"
+
+Newer macOS SDKs implement SwiftUI's `@State` as a macro, and the Command Line Tools don't ship its plugin (Xcode does). Without Xcode, build against an older SDK from the Command Line Tools:
+
+```sh
+ls /Library/Developer/CommandLineTools/SDKs
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk ./build.sh --install
+```
+
+Pick a macOS 26 SDK from the list. The macOS 27 SDKs have the problem.
 
 ## Icon
 
