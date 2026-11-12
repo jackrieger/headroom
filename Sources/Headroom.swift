@@ -332,7 +332,7 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(showModelLimits, forKey: "showModelLimits") }
     }
     @Published var refreshMinutes = refreshOptions.contains(UserDefaults.standard.integer(forKey: "refreshMinutes"))
-        ? UserDefaults.standard.integer(forKey: "refreshMinutes") : 5 {
+        ? UserDefaults.standard.integer(forKey: "refreshMinutes") : 2 {
         didSet {
             UserDefaults.standard.set(refreshMinutes, forKey: "refreshMinutes")
             refreshIfDue()
