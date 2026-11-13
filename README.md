@@ -24,11 +24,16 @@ Each check runs `~/.local/bin/claude -p` in stream-json mode with no MCP servers
 
 ## Accounts
 
-The first account is whichever one your terminal `claude` is signed in to (`~/.claude`). Headroom can't remove it, but you can rename it.
+The first account is whichever one your terminal `claude` is signed in to (`~/.claude`). It follows that login, so if you sign the terminal in to a different account, Headroom tracks the new one.
 
 **Add account** gives the new account its own Claude Code config folder in `~/Library/Application Support/Headroom/Accounts/` and opens Terminal to run `claude auth login` with `CLAUDE_CONFIG_DIR` set to that folder. Sign in in the browser with the account you want. If the browser is already signed in to a different Claude account, switch accounts there first. After you approve, the page shows a code: paste it into Terminal and press Return. Headroom picks up the new account a few seconds after you finish. Claude Code stores each folder's login under its own Keychain entry (`Claude Code-credentials-<hash of the folder>`), so adding an account never signs your terminal `claude` out of its own.
 
-If you sign in to an account Headroom already tracks, its section warns you. Use **Sign In Again…** from its ⋯ menu to fix that. **Remove Account** runs `claude auth logout` for that folder, which deletes only that folder's Keychain entry, and then deletes the folder.
+Each login is tracked once:
+
+- If a sign-in lands on a login Headroom already tracks, Headroom signs that folder back out and says which account already has it. Sign in again with a different account, or remove it.
+- If your terminal login changes to one you've already added, Headroom shows it once, on the added account, marked "also your terminal login".
+
+**Remove from Headroom**, in each account's ⋯ menu, works for every account. For an added account it runs `claude auth logout` for that folder, which deletes only that folder's Keychain entry, and then deletes the folder. For the terminal login it only stops tracking it and never signs your terminal `claude` out. Add it back from Add account → Claude Code's Terminal Login.
 
 The Claude desktop app keeps its own login, which Headroom can't read. To track the account the desktop app uses, add it here too.
 

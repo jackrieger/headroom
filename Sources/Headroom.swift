@@ -328,6 +328,7 @@ final class Model: ObservableObject {
     @Published private(set) var accounts: [AccountConfig]
     @Published var states: [String: AccountState] = [:]
     @Published var signIns: [String: SignInWatch] = [:]
+    @Published var signInNotes: [String: String] = [:]
     @Published var showModelLimits = UserDefaults.standard.object(forKey: "showModelLimits") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showModelLimits, forKey: "showModelLimits") }
     }
@@ -346,7 +347,7 @@ final class Model: ObservableObject {
 
     init() {
         if let data = UserDefaults.standard.data(forKey: "accounts"),
-           let saved = try? JSONDecoder().decode([AccountConfig].self, from: data), !saved.isEmpty {
+           let saved = try? JSONDecoder().decode([AccountConfig].self, from: data) {
             accounts = saved
         } else {
             accounts = [AccountConfig(id: "default")]
@@ -374,22 +375,49 @@ final class Model: ObservableObject {
         accounts.sorted { label($0).localizedStandardCompare(label($1)) == .orderedAscending }
     }
 
-    func duplicate(of account: AccountConfig) -> String? {
-        let sorted = sortedAccounts
-        guard let id = state(account).profile.id, let index = sorted.firstIndex(of: account) else { return nil }
-        return sorted[..<index].first { state($0).profile.id == id }.map(label)
+    var visibleAccounts: [AccountConfig] { sortedAccounts.filter { !hiddenAsDuplicate($0) } }
+
+    var tracksTerminalLogin: Bool { accounts.contains { $0.isDefault } }
+
+    private func loginID(_ account: AccountConfig) -> String? {
+        state(account).error?.signedOut == true ? nil : state(account).profile.id
+    }
+
+    func hiddenAsDuplicate(_ account: AccountConfig) -> Bool {
+        guard let id = loginID(account), let index = accounts.firstIndex(of: account) else { return false }
+        let others = accounts.indices.filter { $0 != index && loginID(accounts[$0]) == id }
+        if account.isDefault { return !others.isEmpty }
+        return others.contains { !accounts[$0].isDefault && $0 < index }
+    }
+
+    func sharesTerminalLogin(_ account: AccountConfig) -> Bool {
+        !account.isDefault && accounts.contains { $0.isDefault && hiddenAsDuplicate($0) && loginID($0) == loginID(account) }
     }
 
     var refreshing: Bool { states.values.contains { $0.refreshing } }
 
     var modelLimitNames: [String] {
-        Set(accounts.flatMap { state($0).usage?.limits.compactMap(\.model) ?? [] }).sorted()
+        Set(visibleAccounts.flatMap { state($0).usage?.limits.compactMap(\.model) ?? [] }).sorted()
     }
 
-    var oldestFetch: Date? { accounts.compactMap { state($0).usage?.fetchedAt }.min() }
+    var oldestFetch: Date? { visibleAccounts.compactMap { state($0).usage?.fetchedAt }.min() }
+
+    private func updateProfiles() {
+        for account in accounts {
+            let current = profile(configDir: account.configDir)
+            guard current.id != state(account).profile.id || current.email != state(account).profile.email else { continue }
+            let switched = current.id != state(account).profile.id
+            states[account.id, default: AccountState()].profile = current
+            if switched {
+                states[account.id]?.usage = nil
+                states[account.id]?.lastAttempt = nil
+            }
+        }
+    }
 
     func refreshIfStale(olderThan age: TimeInterval) {
-        for account in accounts {
+        updateProfiles()
+        for account in accounts where !hiddenAsDuplicate(account) {
             if let lastAttempt = state(account).lastAttempt, Date().timeIntervalSince(lastAttempt) < age { continue }
             refresh(account)
         }
@@ -397,7 +425,10 @@ final class Model: ObservableObject {
 
     func refreshIfDue() { refreshIfStale(olderThan: TimeInterval(refreshMinutes * 60) - 5) }
 
-    func refreshAll() { accounts.forEach(refresh) }
+    func refreshAll() {
+        updateProfiles()
+        accounts.filter { !hiddenAsDuplicate($0) }.forEach(refresh)
+    }
 
     func refresh(_ account: AccountConfig) {
         guard !state(account).refreshing else { return }
@@ -458,6 +489,7 @@ final class Model: ObservableObject {
             return
         }
         NSWorkspace.shared.open(url)
+        signInNotes[account.id] = nil
         signIns[account.id] = SignInWatch(since: Date(), previousID: profile(configDir: configDir).id)
         if signInTimer == nil {
             signInTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -467,7 +499,7 @@ final class Model: ObservableObject {
         closePopover?()
     }
 
-    private func checkSignIns() {
+    func checkSignIns() {
         for (id, watch) in signIns {
             guard let account = accounts.first(where: { $0.id == id }), Date().timeIntervalSince(watch.since) < 15 * 60 else {
                 signIns[id] = nil
@@ -476,6 +508,15 @@ final class Model: ObservableObject {
             let current = profile(configDir: account.configDir).id
             guard current != nil, current != watch.previousID else { continue }
             signIns[id] = nil
+            if let existing = accounts.first(where: { $0.id != id && profile(configDir: $0.configDir).id == current }),
+               let configDir = account.configDir {
+                signInNotes[id] = "That login is already in Headroom as \(label(existing)). Sign in with a different account."
+                states[id] = AccountState(error: UsageError(message: "Not signed in.", signedOut: true))
+                Task.detached {
+                    if let claude = findClaude() { _ = await runClaude(claude, ["auth", "logout"], configDir: configDir, timeout: 30) }
+                }
+                continue
+            }
             Task {
                 try? await Task.sleep(for: .seconds(2))
                 refresh(account)
@@ -494,12 +535,22 @@ final class Model: ObservableObject {
         save()
     }
 
+    func addTerminalLogin() {
+        guard !tracksTerminalLogin else { return }
+        let account = AccountConfig(id: "default")
+        accounts.append(account)
+        states[account.id] = AccountState(profile: profile(configDir: nil))
+        save()
+        refresh(account)
+    }
+
     func remove(_ account: AccountConfig) {
-        guard let configDir = account.configDir, configDir.hasPrefix(accountsDirectory.path + "/") else { return }
         accounts.removeAll { $0.id == account.id }
         states[account.id] = nil
         signIns[account.id] = nil
+        signInNotes[account.id] = nil
         save()
+        guard let configDir = account.configDir, configDir.hasPrefix(accountsDirectory.path + "/") else { return }
         Task.detached {
             if let claude = findClaude() {
                 _ = await runClaude(claude, ["auth", "logout"], configDir: configDir, timeout: 30)
@@ -591,8 +642,8 @@ struct AccountSection: View {
         let state = model.state(account)
         VStack(alignment: .leading, spacing: 12) {
             title(state)
-            if let original = model.duplicate(of: account) {
-                Text("This is the same login as \(original). Sign in again with a different account.")
+            if let note = model.signInNotes[account.id] {
+                Text(note)
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -646,7 +697,9 @@ struct AccountSection: View {
                     }
                 }
                 if let email = state.profile.email {
-                    Text(email).font(.caption).foregroundStyle(.secondary)
+                    Text(model.sharesTerminalLogin(account) ? "\(email) · also your terminal login" : email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -658,9 +711,9 @@ struct AccountSection: View {
                 }
                 if !account.isDefault {
                     Button("Sign In Again…") { model.signIn(account) }
-                    Divider()
-                    Button("Remove Account") { model.remove(account) }
                 }
+                Divider()
+                Button("Remove from Headroom") { model.remove(account) }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -702,8 +755,11 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                let accounts = model.sortedAccounts
+                let accounts = model.visibleAccounts
                 VStack(alignment: .leading, spacing: 14) {
+                    if accounts.isEmpty {
+                        Text("No accounts yet. Add one below.").font(.callout).foregroundStyle(.secondary)
+                    }
                     ForEach(accounts) { account in
                         if account != accounts.first { Divider() }
                         AccountSection(model: model, account: account, now: context.date)
@@ -720,11 +776,24 @@ struct ContentView: View {
     private var footer: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Button { model.addAccount() } label: {
-                    Label("Add account", systemImage: "plus")
+                if model.tracksTerminalLogin {
+                    Button { model.addAccount() } label: {
+                        Label("Add account", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Sign in to another Claude account to track it too")
+                } else {
+                    Menu {
+                        Button("Sign In to an Account…") { model.addAccount() }
+                        Button("Claude Code's Terminal Login") { model.addTerminalLogin() }
+                    } label: {
+                        Label("Add account", systemImage: "plus")
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.borderless)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
                 }
-                .buttonStyle(.borderless)
-                .help("Sign in to another Claude account to track it too")
                 Spacer()
                 if let fetched = model.oldestFetch {
                     Text("Updated \(fetched.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
@@ -1015,7 +1084,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
         let now = Date()
-        let tracked = model.sortedAccounts.compactMap { account in
+        let tracked = model.visibleAccounts.compactMap { account in
             model.state(account).usage.map { (label: model.label(account), usage: $0) }
         }
         let segments = tracked.map { entry in
