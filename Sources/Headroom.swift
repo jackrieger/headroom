@@ -473,6 +473,7 @@ final class Model: ObservableObject {
         clear
         print -P "%BAdd a Claude account to Headroom%b"
         print "Your browser opens next. Make sure it's signed in to the Claude account you want to add."
+        print "If that browser is signed in to a different account, copy the link printed below into a browser that's signed in to the right one."
         print "After you approve, copy the code the page shows, paste it below and press Return."
         print
         CLAUDE_CONFIG_DIR=\(shellQuote(configDir)) \(shellQuote(claude.path)) auth login
